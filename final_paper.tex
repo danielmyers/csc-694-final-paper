@@ -90,7 +90,7 @@ There are a wide variety of use cases in which context aware authentication can 
 In order to make the reference implementation of PinPoint as simple as possible to build and run, the implementation described in this paper will use common open source web technologies that are readily available and widely supported.
 
 \subsection{Technology Stack}
-The initial implementation of PinPoint will utilize the Python~\cite{python} programming language and leverage the Django Framework~\cite{django} to implement the api layer of the application.  The data layer will reside on a separate instance and use Postgresql~\cite{postgresql} which is a fully ANSI compliant open source database.  All of the components for the PinPoint backend will be hosted on Amazon Web Services~\cite{aws}.
+The initial implementation of PinPoint will utilize the Python~\cite{python} programming language and leverage the Django Framework~\cite{django} to implement the api layer of the application.  The data layer will reside on a separate instance and use Postgresql~\cite{postgresql} which is a fully ANSI compliant open source database.  All of the components for the PinPoint backend will be hosted on Amazon Web Services~\cite{aws} using an EC2 t3.micro instance (2 vCPU cores and 1 GB RAM) for the web node and a db.t2.micro (1 vCPU core and 1 GB RAM) Postgresql RDS for the data layer.
 
 In addition to the PinPoint backend, an NFC relay is also implmented in Python which receives commands from the GoToTags~\cite{gototags} application when a key card is scanned.  The key card scanner is an ACR122U created by Advanced Card Systems~\cite{acr122u} and is locally connected to a personal computer to imitate the act of scanning a key card at a door or similar entry point.  The cards used contain the Mifare classic 1k chipset which holds one kilobyte of data.   
 
@@ -172,8 +172,73 @@ class Context(models.Model):
 
 
 \subsection{Context Filtering Strategy}
-Pinpoint will utilize a combination of temporal constraints as well as a key value store in an attempt to quickly identify a subset of potentially relevant context and check it against the user awaiting login.  The checks will happen in real-time when a user submits their credentials to a terminal that is using PinPoint as an authentication backend.  Furthermore, context will be retrieved in the order of most to least recent which increases the likely hood that valid context will be found before examining most of the data set.  Another consideration when considering the filtering of context in the PinPoint authentication system is that the initial implementation only passively gathers context, meaning that the context generating nodes need to explicitly send their context to the authentication system.  In practice this means that any context received by PinPoint is most likely relevant to one of the users registered the system.  This method of context gathering will greatly reduce the noise compared to collecting everything in a sensor network for a given location.
+Pinpoint will utilize a combination of temporal constraints as well as a key value store in an attempt to quickly identify a subset of potentially relevant context and check it against the user awaiting login.  The checks will happen in real-time when a user submits their credentials to a terminal that is using PinPoint as an authentication backend.  Furthermore, context will be retrieved in the order of most to least recent which increases the likely hood that valid context will be found before examining most of the data set.  Another consideration when considering the filtering of context in the PinPoint authentication system is that the initial implementation only passively gathers context, meaning that the context generating nodes need to explicitly send their context to the authentication system.  In practice this means that any context received by PinPoint is most likely relevant to one of the users registered the system.  This method of context gathering will greatly reduce the noise compared to collecting everything in a sensor network for a given location.  The code in listing 3 shows the check that is run on all context attached to the configured key card reader.
 
+\begin{lstlisting}[
+caption=Context Filtering Checks
+]
+def get_status(self, **kwargs):
+  if 'user' not in kwargs:
+    return False
+
+  if 'context' not in kwargs:
+    return False
+
+  user_email = kwargs['user'].email
+  context = kwargs['context']
+  cutoff_time = datetime.datetime.now(pytz.utc) - 
+    datetime.timedelta(seconds=context.ttl)
+
+  contexts = Context.objects.filter(
+    created__gte=cutoff_time, 
+    context__records__0__EmailPreferred=user_email
+  )
+  if contexts:
+    return True
+  else:
+    return False
+
+\end{lstlisting}
+
+\section{System Evaluation}
+The system evaluation involved measuring the time elapsed during a user login Request in order to ascertain how the system would perform given varying levels of context.  For this test, the user login was testing with 100, 1000, 10000, 100000, and 10000000 entries in the context table.  During each level of testing the system was tested in two scenarios:
+
+\begin{enumerate}
+	\item No valid context - Despite the fact that the context table has the number of items for the given iteration, no valid context exists for that login.
+	\item One valid context - Only one piece of valid context exists for the given login.  This was done in an attempt to provide a worst case lookup since the database will need to find the one matching record in the table.
+\end{enumerate}
+
+All of the context levels were run 3 times and the average of those tests appears in the table below:\\
+
+\begin{tabular}{|c|c|c|}
+	\hline 
+	\rule[-1ex]{0pt}{2.5ex} Context Count & Fail Time & Success Time \\ 
+	\hline 
+	\rule[-1ex]{0pt}{2.5ex} 100 & 942.808 ms & 984.58 ms \\ 
+	\hline 
+	\rule[-1ex]{0pt}{2.5ex} 1,000 & 769.104 ms & 1142.147 ms \\ 
+	\hline 
+	\rule[-1ex]{0pt}{2.5ex} 10,000 & 822.841 ms & 1097.093 ms \\ 
+	\hline 
+	\rule[-1ex]{0pt}{2.5ex} 100,000 & 1092.189 ms & 1291.088 ms \\ 
+	\hline 
+	\rule[-1ex]{0pt}{2.5ex} 1,000,000 & 13463.753 ms & 113702.113 ms \\ 
+	\hline 
+\end{tabular}\\
+
+From the table above it is apparent that there is a significant performance degradation between 100,000 and 1,000,000 items.  This is most likely a limitation of the hardware that this particular implementation is utilizing since Postgresql needs to store the entire index for a table in memory in order to achieve optimal performance.  When the size of the table reached 1,000,000 items the table index size around 750mb due to the fact that all of the JSON fields were indexed for searching.  It is unlikely that the RDS instance used for this paper was able to store the entire index in memory because it had 1 GB of RAM for the whole database.
+
+\section{Future Work}
+There are a number of areas that can be explored in more detail as to improve the reference implementation provided in this paper.
+
+\begin{itemize}
+	\item Context searching - The method for searching context in this paper relies on specific implementations written for each device.  While this will likely reduce the number of false positives and allow for greater context filtering on the way into the system, it is slower than utilizing a searching tool such as Elastic Search or possibly a high speed cache such as Redis.  
+	\item Active context collection - In this implementation the PinPoint backend passively received context in which must be filtered in order to approve or deny a user login.  In future implementations, the ability to actively gather context from a set of heterogeneous devices must be explored.
+\end{itemize}
+
+\section{Conclusion}
+
+This paper has put forth a system called PinPoint which focuses on using the context created by IoT devices in order to ensure that users logging into a system are actually the person authorized to access the system. Furthermore, a reference implementation of the proposed system has been created an tested against varying levels of context.  In conclusion, the paper has demonstrated the viability of context-aware authentication systems and provided a starting point for future implementations which can be leveraged to enhance the security of a wide range of systems.
 
 
 \bibliographystyle{IEEEtranN}
